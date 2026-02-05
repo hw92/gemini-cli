@@ -4,19 +4,30 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import {
+  renderWithProviders,
+  persistentStateMock,
+} from '../../test-utils/render.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AlternateBufferQuittingDisplay } from './AlternateBufferQuittingDisplay.js';
 import { ToolCallStatus } from '../types.js';
 import type { HistoryItem, HistoryItemWithoutId } from '../types.js';
 import { Text } from 'ink';
-import { renderWithProviders } from '../../test-utils/render.js';
-import type { Config } from '@google/gemini-cli-core';
 
-vi.mock('../contexts/AppContext.js', () => ({
-  useAppContext: () => ({
-    version: '0.10.0',
-  }),
+vi.mock('../utils/terminalSetup.js', () => ({
+  getTerminalProgram: () => null,
 }));
+
+vi.mock('../contexts/AppContext.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../contexts/AppContext.js')>();
+  return {
+    ...actual,
+    useAppContext: () => ({
+      version: '0.10.0',
+    }),
+  };
+});
 
 vi.mock('@google/gemini-cli-core', async (importOriginal) => {
   const actual =
@@ -78,33 +89,138 @@ const mockPendingHistoryItems: HistoryItemWithoutId[] = [
   },
 ];
 
-const mockConfig = {
-  getScreenReader: () => false,
-  getEnableInteractiveShell: () => false,
-  getModel: () => 'gemini-pro',
-  getTargetDir: () => '/tmp',
-  getDebugMode: () => false,
-  getGeminiMdFileCount: () => 0,
-} as unknown as Config;
-
 describe('AlternateBufferQuittingDisplay', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  const baseUIState = {
+    terminalWidth: 80,
+    mainAreaWidth: 80,
+    slashCommands: [],
+    activePtyId: undefined,
+    embeddedShellFocused: false,
+    renderMarkdown: false,
+    bannerData: {
+      defaultText: '',
+      warningText: '',
+    },
+  };
+
   it('renders with active and pending tool messages', () => {
+    persistentStateMock.setData({ tipsShown: 0 });
     const { lastFrame } = renderWithProviders(
       <AlternateBufferQuittingDisplay />,
       {
         uiState: {
+          ...baseUIState,
           history: mockHistory,
           pendingHistoryItems: mockPendingHistoryItems,
-          terminalWidth: 80,
-          mainAreaWidth: 80,
-          slashCommands: [],
-          activePtyId: undefined,
-          embeddedShellFocused: false,
-          renderMarkdown: false,
         },
-        config: mockConfig,
       },
     );
-    expect(lastFrame()).toMatchSnapshot();
+    expect(lastFrame()).toMatchSnapshot('with_history_and_pending');
+  });
+
+  it('renders with empty history and no pending items', () => {
+    persistentStateMock.setData({ tipsShown: 0 });
+    const { lastFrame } = renderWithProviders(
+      <AlternateBufferQuittingDisplay />,
+      {
+        uiState: {
+          ...baseUIState,
+          history: [],
+          pendingHistoryItems: [],
+        },
+      },
+    );
+    expect(lastFrame()).toMatchSnapshot('empty');
+  });
+
+  it('renders with history but no pending items', () => {
+    persistentStateMock.setData({ tipsShown: 0 });
+    const { lastFrame } = renderWithProviders(
+      <AlternateBufferQuittingDisplay />,
+      {
+        uiState: {
+          ...baseUIState,
+          history: mockHistory,
+          pendingHistoryItems: [],
+        },
+      },
+    );
+    expect(lastFrame()).toMatchSnapshot('with_history_no_pending');
+  });
+
+  it('renders with pending items but no history', () => {
+    persistentStateMock.setData({ tipsShown: 0 });
+    const { lastFrame } = renderWithProviders(
+      <AlternateBufferQuittingDisplay />,
+      {
+        uiState: {
+          ...baseUIState,
+          history: [],
+          pendingHistoryItems: mockPendingHistoryItems,
+        },
+      },
+    );
+    expect(lastFrame()).toMatchSnapshot('with_pending_no_history');
+  });
+
+  it('renders with a tool awaiting confirmation', () => {
+    persistentStateMock.setData({ tipsShown: 0 });
+    const pendingHistoryItems: HistoryItemWithoutId[] = [
+      {
+        type: 'tool_group',
+        tools: [
+          {
+            callId: 'call4',
+            name: 'confirming_tool',
+            description: 'Confirming tool description',
+            status: ToolCallStatus.Confirming,
+            resultDisplay: undefined,
+            confirmationDetails: {
+              type: 'info',
+              title: 'Confirm Tool',
+              prompt: 'Confirm this action?',
+              onConfirm: async () => {},
+            },
+          },
+        ],
+      },
+    ];
+    const { lastFrame } = renderWithProviders(
+      <AlternateBufferQuittingDisplay />,
+      {
+        uiState: {
+          ...baseUIState,
+          history: [],
+          pendingHistoryItems,
+        },
+      },
+    );
+    const output = lastFrame();
+    expect(output).toContain('Action Required (was prompted):');
+    expect(output).toContain('confirming_tool');
+    expect(output).toContain('Confirming tool description');
+    expect(output).toMatchSnapshot('with_confirming_tool');
+  });
+
+  it('renders with user and gemini messages', () => {
+    persistentStateMock.setData({ tipsShown: 0 });
+    const history: HistoryItem[] = [
+      { id: 1, type: 'user', text: 'Hello Gemini' },
+      { id: 2, type: 'gemini', text: 'Hello User!' },
+    ];
+    const { lastFrame } = renderWithProviders(
+      <AlternateBufferQuittingDisplay />,
+      {
+        uiState: {
+          ...baseUIState,
+          history,
+          pendingHistoryItems: [],
+        },
+      },
+    );
+    expect(lastFrame()).toMatchSnapshot('with_user_gemini_messages');
   });
 });

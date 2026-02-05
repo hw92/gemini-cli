@@ -1,12 +1,31 @@
-# Policy Engine
-
-:::note This feature is currently in testing. To enable it, set
-`tools.enableMessageBusIntegration` to `true` in your `settings.json` file. :::
+# Policy engine
 
 The Gemini CLI includes a powerful policy engine that provides fine-grained
 control over tool execution. It allows users and administrators to define rules
 that determine whether a tool call should be allowed, denied, or require user
 confirmation.
+
+## Quick start
+
+To create your first policy:
+
+1.  **Create the policy directory** if it doesn't exist:
+    ```bash
+    mkdir -p ~/.gemini/policies
+    ```
+2.  **Create a new policy file** (e.g., `~/.gemini/policies/my-rules.toml`). You
+    can use any filename ending in `.toml`; all such files in this directory
+    will be loaded and combined:
+    ```toml
+    [[rule]]
+    toolName = "run_shell_command"
+    commandPrefix = "git status"
+    decision = "allow"
+    priority = 100
+    ```
+3.  **Run a command** that triggers the policy (e.g., ask Gemini CLI to
+    `git status`). The tool will now execute automatically without prompting for
+    confirmation.
 
 ## Core concepts
 
@@ -49,7 +68,7 @@ The `toolName` in the rule must match the name of the tool being called.
   wildcard. A `toolName` of `my-server__*` will match any tool from the
   `my-server` MCP.
 
-#### Arguments Pattern
+#### Arguments pattern
 
 If `argsPattern` is specified, the tool's arguments are converted to a stable
 JSON string, which is then tested against the provided regular expression. If
@@ -64,7 +83,7 @@ There are three possible decisions a rule can enforce:
 - `ask_user`: The user is prompted to approve or deny the tool call. (In
   non-interactive mode, this is treated as `deny`.)
 
-### Priority system & tiers
+### Priority system and tiers
 
 The policy engine uses a sophisticated priority system to resolve conflicts when
 multiple rules match a single tool call. The core principle is simple: **the
@@ -112,12 +131,12 @@ outcome.
 
 A rule matches a tool call if all of its conditions are met:
 
-1.  **Tool Name**: The `toolName` in the rule must match the name of the tool
+1.  **Tool name**: The `toolName` in the rule must match the name of the tool
     being called.
     - **Wildcards**: For Model-hosting-protocol (MCP) servers, you can use a
       wildcard. A `toolName` of `my-server__*` will match any tool from the
       `my-server` MCP.
-2.  **Arguments Pattern**: If `argsPattern` is specified, the tool's arguments
+2.  **Arguments pattern**: If `argsPattern` is specified, the tool's arguments
     are converted to a stable JSON string, which is then tested against the
     provided regular expression. If the arguments don't match the pattern, the
     rule does not apply.
@@ -126,6 +145,38 @@ A rule matches a tool call if all of its conditions are met:
 
 Policies are defined in `.toml` files. The CLI loads these files from Default,
 User, and (if configured) Admin directories.
+
+### Policy locations
+
+| Tier      | Type   | Location                    |
+| :-------- | :----- | :-------------------------- |
+| **User**  | Custom | `~/.gemini/policies/*.toml` |
+| **Admin** | System | _See below (OS specific)_   |
+
+#### System-wide policies (Admin)
+
+Administrators can enforce system-wide policies (Tier 3) that override all user
+and default settings. These policies must be placed in specific, secure
+directories:
+
+| OS          | Policy Directory Path                             |
+| :---------- | :------------------------------------------------ |
+| **Linux**   | `/etc/gemini-cli/policies`                        |
+| **macOS**   | `/Library/Application Support/GeminiCli/policies` |
+| **Windows** | `C:\ProgramData\gemini-cli\policies`              |
+
+**Security Requirements:**
+
+To prevent privilege escalation, the CLI enforces strict security checks on
+admin directories. If checks fail, system policies are **ignored**.
+
+- **Linux / macOS:** Must be owned by `root` (UID 0) and NOT writable by group
+  or others (e.g., `chmod 755`).
+- **Windows:** Must be in `C:\ProgramData`. Standard users (`Users`, `Everyone`)
+  must NOT have `Write`, `Modify`, or `Full Control` permissions. _Tip: If you
+  see a security warning, use the folder properties to remove write permissions
+  for non-admin groups. You may need to "Disable inheritance" in Advanced
+  Security Settings._
 
 ### TOML rule schema
 
@@ -158,6 +209,10 @@ decision = "ask_user"
 
 # The priority of the rule, from 0 to 999.
 priority = 10
+
+# (Optional) A custom message to display when a tool call is denied by this rule.
+# This message is returned to the model and user, useful for explaining *why* it was denied.
+deny_message = "Deletion is permanent"
 
 # (Optional) An array of approval modes where this rule is active.
 modes = ["autoEdit"]
@@ -220,7 +275,7 @@ decision = "allow"
 priority = 200
 ```
 
-**2. Using a Wildcard**
+**2. Using a wildcard**
 
 To create a rule that applies to _all_ tools on a specific MCP server, specify
 only the `mcpName`.
@@ -231,6 +286,7 @@ only the `mcpName`.
 mcpName = "untrusted-server"
 decision = "deny"
 priority = 500
+deny_message = "This server is not trusted by the admin."
 ```
 
 ## Default policies
@@ -239,6 +295,9 @@ The Gemini CLI ships with a set of default policies to provide a safe
 out-of-the-box experience.
 
 - **Read-only tools** (like `read_file`, `glob`) are generally **allowed**.
+- **Agent delegation** defaults to **`ask_user`** to ensure remote agents can
+  prompt for confirmation, but local sub-agent actions are executed silently and
+  checked individually.
 - **Write tools** (like `write_file`, `run_shell_command`) default to
   **`ask_user`**.
 - In **`yolo`** mode, a high-priority rule allows all tools.

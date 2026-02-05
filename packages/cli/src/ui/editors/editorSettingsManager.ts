@@ -6,8 +6,9 @@
 
 import {
   allowEditorTypeInSandbox,
-  checkHasEditorType,
+  hasValidEditorCommand,
   type EditorType,
+  EDITOR_DISPLAY_NAMES,
 } from '@google/gemini-cli-core';
 
 export interface EditorDisplay {
@@ -15,17 +16,6 @@ export interface EditorDisplay {
   type: EditorType | 'not_set';
   disabled: boolean;
 }
-
-export const EDITOR_DISPLAY_NAMES: Record<EditorType, string> = {
-  cursor: 'Cursor',
-  emacs: 'Emacs',
-  neovim: 'Neovim',
-  vim: 'Vim',
-  vscode: 'VS Code',
-  vscodium: 'VSCodium',
-  windsurf: 'Windsurf',
-  zed: 'Zed',
-};
 
 class EditorSettingsManager {
   private readonly availableEditors: EditorDisplay[];
@@ -41,7 +31,7 @@ class EditorSettingsManager {
         disabled: false,
       },
       ...editorTypes.map((type) => {
-        const hasEditor = checkHasEditorType(type);
+        const hasEditor = hasValidEditorCommand(type);
         const isAllowedInSandbox = allowEditorTypeInSandbox(type);
 
         let labelSuffix = !isAllowedInSandbox

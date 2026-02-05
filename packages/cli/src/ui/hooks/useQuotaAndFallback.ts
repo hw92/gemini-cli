@@ -9,20 +9,29 @@ import {
   type Config,
   type FallbackModelHandler,
   type FallbackIntent,
+  type ValidationHandler,
+  type ValidationIntent,
   TerminalQuotaError,
-  UserTierId,
-  DEFAULT_GEMINI_FLASH_MODEL,
+  ModelNotFoundError,
+  type UserTierId,
+  PREVIEW_GEMINI_MODEL,
+  DEFAULT_GEMINI_MODEL,
+  VALID_GEMINI_MODELS,
 } from '@google/gemini-cli-core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { type UseHistoryManagerReturn } from './useHistoryManager.js';
 import { MessageType } from '../types.js';
-import { type ProQuotaDialogRequest } from '../contexts/UIStateContext.js';
+import {
+  type ProQuotaDialogRequest,
+  type ValidationDialogRequest,
+} from '../contexts/UIStateContext.js';
 
 interface UseQuotaAndFallbackArgs {
   config: Config;
   historyManager: UseHistoryManagerReturn;
   userTier: UserTierId | undefined;
   setModelSwitchedFromQuotaError: (value: boolean) => void;
+  onShowAuthSelection: () => void;
 }
 
 export function useQuotaAndFallback({
@@ -30,10 +39,14 @@ export function useQuotaAndFallback({
   historyManager,
   userTier,
   setModelSwitchedFromQuotaError,
+  onShowAuthSelection,
 }: UseQuotaAndFallbackArgs) {
   const [proQuotaRequest, setProQuotaRequest] =
     useState<ProQuotaDialogRequest | null>(null);
+  const [validationRequest, setValidationRequest] =
+    useState<ValidationDialogRequest | null>(null);
   const isDialogPending = useRef(false);
+  const isValidationPending = useRef(false);
 
   // Set up Flash fallback handler
   useEffect(() => {
@@ -51,56 +64,43 @@ export function useQuotaAndFallback({
         return null;
       }
 
-      // Use actual user tier if available; otherwise, default to FREE tier behavior (safe default)
-      const isPaidTier =
-        userTier === UserTierId.LEGACY || userTier === UserTierId.STANDARD;
-
-      const isFallbackModel = failedModel === DEFAULT_GEMINI_FLASH_MODEL;
       let message: string;
-
+      let isTerminalQuotaError = false;
+      let isModelNotFoundError = false;
+      const usageLimitReachedModel =
+        failedModel === DEFAULT_GEMINI_MODEL ||
+        failedModel === PREVIEW_GEMINI_MODEL
+          ? 'all Pro models'
+          : failedModel;
       if (error instanceof TerminalQuotaError) {
+        isTerminalQuotaError = true;
         // Common part of the message for both tiers
         const messageLines = [
-          `⚡ You have reached your daily ${failedModel} quota limit.`,
-          `⚡ You can choose to authenticate with a paid API key${
-            isFallbackModel ? '.' : ' or continue with the fallback model.'
-          }`,
+          `Usage limit reached for ${usageLimitReachedModel}.`,
+          error.retryDelayMs ? getResetTimeMessage(error.retryDelayMs) : null,
+          `/stats for usage details`,
+          `/model to switch models.`,
+          `/auth to switch to API key.`,
+        ].filter(Boolean);
+        message = messageLines.join('\n');
+      } else if (
+        error instanceof ModelNotFoundError &&
+        VALID_GEMINI_MODELS.has(failedModel)
+      ) {
+        isModelNotFoundError = true;
+        const messageLines = [
+          `It seems like you don't have access to ${failedModel}.`,
+          `Learn more at https://goo.gle/enable-preview-features`,
+          `To disable ${failedModel}, disable "Preview features" in /settings.`,
         ];
-
-        // Tier-specific part
-        if (isPaidTier) {
-          messageLines.push(
-            `⚡ Increase your limits by using a Gemini API Key. See: https://goo.gle/gemini-cli-docs-auth#gemini-api-key`,
-            `⚡ You can switch authentication methods by typing /auth`,
-          );
-        } else {
-          messageLines.push(
-            `⚡ Increase your limits by `,
-            `⚡ - signing up for a plan with higher limits at https://goo.gle/set-up-gemini-code-assist`,
-            `⚡ - or using a Gemini API Key. See: https://goo.gle/gemini-cli-docs-auth#gemini-api-key`,
-            `⚡ You can switch authentication methods by typing /auth`,
-          );
-        }
         message = messageLines.join('\n');
       } else {
-        // Capacity error
-        message = [
-          `🚦Pardon Our Congestion! It looks like ${failedModel} is very popular at the moment.`,
-          `Please retry again later.`,
-        ].join('\n');
-      }
-
-      // Add message to UI history
-      historyManager.addItem(
-        {
-          type: MessageType.INFO,
-          text: message,
-        },
-        Date.now(),
-      );
-
-      if (isFallbackModel) {
-        return 'stop';
+        const messageLines = [
+          `We are currently experiencing high demand.`,
+          'We apologize and appreciate your patience.',
+          '/model to switch models.',
+        ];
+        message = messageLines.join('\n');
       }
 
       setModelSwitchedFromQuotaError(true);
@@ -117,6 +117,9 @@ export function useQuotaAndFallback({
             failedModel,
             fallbackModel,
             resolve,
+            message,
+            isTerminalQuotaError,
+            isModelNotFoundError,
           });
         },
       );
@@ -127,6 +130,36 @@ export function useQuotaAndFallback({
     config.setFallbackModelHandler(fallbackHandler);
   }, [config, historyManager, userTier, setModelSwitchedFromQuotaError]);
 
+  // Set up validation handler for 403 VALIDATION_REQUIRED errors
+  useEffect(() => {
+    const validationHandler: ValidationHandler = async (
+      validationLink,
+      validationDescription,
+      learnMoreUrl,
+    ): Promise<ValidationIntent> => {
+      if (isValidationPending.current) {
+        return 'cancel'; // A validation dialog is already active
+      }
+      isValidationPending.current = true;
+
+      const intent: ValidationIntent = await new Promise<ValidationIntent>(
+        (resolve) => {
+          // Call setValidationRequest directly - same pattern as proQuotaRequest
+          setValidationRequest({
+            validationLink,
+            validationDescription,
+            learnMoreUrl,
+            resolve,
+          });
+        },
+      );
+
+      return intent;
+    };
+
+    config.setValidationHandler(validationHandler);
+  }, [config]);
+
   const handleProQuotaChoice = useCallback(
     (choice: FallbackIntent) => {
       if (!proQuotaRequest) return;
@@ -136,21 +169,59 @@ export function useQuotaAndFallback({
       setProQuotaRequest(null);
       isDialogPending.current = false; // Reset the flag here
 
-      if (choice === 'retry') {
-        historyManager.addItem(
-          {
-            type: MessageType.INFO,
-            text: 'Switched to fallback model. Tip: Press Ctrl+P (or Up Arrow) to recall your previous prompt and submit it again if you wish.',
-          },
-          Date.now(),
-        );
+      if (choice === 'retry_always' || choice === 'retry_once') {
+        // Reset quota error flags to allow the agent loop to continue.
+        setModelSwitchedFromQuotaError(false);
+        config.setQuotaErrorOccurred(false);
+
+        if (choice === 'retry_always') {
+          historyManager.addItem(
+            {
+              type: MessageType.INFO,
+              text: `Switched to fallback model ${proQuotaRequest.fallbackModel}`,
+            },
+            Date.now(),
+          );
+        }
       }
     },
-    [proQuotaRequest, historyManager],
+    [proQuotaRequest, historyManager, config, setModelSwitchedFromQuotaError],
+  );
+
+  const handleValidationChoice = useCallback(
+    (choice: ValidationIntent) => {
+      // Guard against double-execution (e.g. rapid clicks) and stale requests
+      if (!isValidationPending.current || !validationRequest) return;
+
+      // Immediately clear the flag to prevent any subsequent calls from passing the guard
+      isValidationPending.current = false;
+
+      validationRequest.resolve(choice);
+      setValidationRequest(null);
+
+      if (choice === 'change_auth' || choice === 'cancel') {
+        onShowAuthSelection();
+      }
+    },
+    [validationRequest, onShowAuthSelection],
   );
 
   return {
     proQuotaRequest,
     handleProQuotaChoice,
+    validationRequest,
+    handleValidationChoice,
   };
+}
+
+function getResetTimeMessage(delayMs: number): string {
+  const resetDate = new Date(Date.now() + delayMs);
+
+  const timeFormatter = new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+
+  return `Access resets at ${timeFormatter.format(resetDate)}.`;
 }

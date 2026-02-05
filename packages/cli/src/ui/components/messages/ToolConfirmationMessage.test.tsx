@@ -11,8 +11,28 @@ import type {
   Config,
 } from '@google/gemini-cli-core';
 import { renderWithProviders } from '../../../test-utils/render.js';
+import { createMockSettings } from '../../../test-utils/settings.js';
+import { useToolActions } from '../../contexts/ToolActionsContext.js';
+
+vi.mock('../../contexts/ToolActionsContext.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('../../contexts/ToolActionsContext.js')
+    >();
+  return {
+    ...actual,
+    useToolActions: vi.fn(),
+  };
+});
 
 describe('ToolConfirmationMessage', () => {
+  const mockConfirm = vi.fn();
+  vi.mocked(useToolActions).mockReturnValue({
+    confirm: mockConfirm,
+    cancel: vi.fn(),
+    isDiffingEnabled: false,
+  });
+
   const mockConfig = {
     isTrustedFolder: () => true,
     getIdeMode: () => false,
@@ -29,6 +49,7 @@ describe('ToolConfirmationMessage', () => {
 
     const { lastFrame } = renderWithProviders(
       <ToolConfirmationMessage
+        callId="test-call-id"
         confirmationDetails={confirmationDetails}
         config={mockConfig}
         availableTerminalHeight={30}
@@ -36,7 +57,7 @@ describe('ToolConfirmationMessage', () => {
       />,
     );
 
-    expect(lastFrame()).not.toContain('URLs to fetch:');
+    expect(lastFrame()).toMatchSnapshot();
   });
 
   it('should display urls if prompt and url are different', () => {
@@ -53,6 +74,7 @@ describe('ToolConfirmationMessage', () => {
 
     const { lastFrame } = renderWithProviders(
       <ToolConfirmationMessage
+        callId="test-call-id"
         confirmationDetails={confirmationDetails}
         config={mockConfig}
         availableTerminalHeight={30}
@@ -60,10 +82,35 @@ describe('ToolConfirmationMessage', () => {
       />,
     );
 
-    expect(lastFrame()).toContain('URLs to fetch:');
-    expect(lastFrame()).toContain(
-      '- https://raw.githubusercontent.com/google/gemini-react/main/README.md',
+    expect(lastFrame()).toMatchSnapshot();
+  });
+
+  it('should display multiple commands for exec type when provided', () => {
+    const confirmationDetails: ToolCallConfirmationDetails = {
+      type: 'exec',
+      title: 'Confirm Multiple Commands',
+      command: 'echo "hello"', // Primary command
+      rootCommand: 'echo',
+      rootCommands: ['echo'],
+      commands: ['echo "hello"', 'ls -la', 'whoami'], // Multi-command list
+      onConfirm: vi.fn(),
+    };
+
+    const { lastFrame } = renderWithProviders(
+      <ToolConfirmationMessage
+        callId="test-call-id"
+        confirmationDetails={confirmationDetails}
+        config={mockConfig}
+        availableTerminalHeight={30}
+        terminalWidth={80}
+      />,
     );
+
+    const output = lastFrame();
+    expect(output).toContain('echo "hello"');
+    expect(output).toContain('ls -la');
+    expect(output).toContain('whoami');
+    expect(output).toMatchSnapshot();
   });
 
   describe('with folder trust', () => {
@@ -83,6 +130,7 @@ describe('ToolConfirmationMessage', () => {
       title: 'Confirm Execution',
       command: 'echo "hello"',
       rootCommand: 'echo',
+      rootCommands: ['echo'],
       onConfirm: vi.fn(),
     };
 
@@ -107,24 +155,24 @@ describe('ToolConfirmationMessage', () => {
       {
         description: 'for edit confirmations',
         details: editConfirmationDetails,
-        alwaysAllowText: 'Yes, allow always',
+        alwaysAllowText: 'Allow for this session',
       },
       {
         description: 'for exec confirmations',
         details: execConfirmationDetails,
-        alwaysAllowText: 'Yes, allow always',
+        alwaysAllowText: 'Allow for this session',
       },
       {
         description: 'for info confirmations',
         details: infoConfirmationDetails,
-        alwaysAllowText: 'Yes, allow always',
+        alwaysAllowText: 'Allow for this session',
       },
       {
         description: 'for mcp confirmations',
         details: mcpConfirmationDetails,
         alwaysAllowText: 'always allow',
       },
-    ])('$description', ({ details, alwaysAllowText }) => {
+    ])('$description', ({ details }) => {
       it('should show "allow always" when folder is trusted', () => {
         const mockConfig = {
           isTrustedFolder: () => true,
@@ -133,6 +181,7 @@ describe('ToolConfirmationMessage', () => {
 
         const { lastFrame } = renderWithProviders(
           <ToolConfirmationMessage
+            callId="test-call-id"
             confirmationDetails={details}
             config={mockConfig}
             availableTerminalHeight={30}
@@ -140,7 +189,7 @@ describe('ToolConfirmationMessage', () => {
           />,
         );
 
-        expect(lastFrame()).toContain(alwaysAllowText);
+        expect(lastFrame()).toMatchSnapshot();
       });
 
       it('should NOT show "allow always" when folder is untrusted', () => {
@@ -151,6 +200,7 @@ describe('ToolConfirmationMessage', () => {
 
         const { lastFrame } = renderWithProviders(
           <ToolConfirmationMessage
+            callId="test-call-id"
             confirmationDetails={details}
             config={mockConfig}
             availableTerminalHeight={30}
@@ -158,8 +208,157 @@ describe('ToolConfirmationMessage', () => {
           />,
         );
 
-        expect(lastFrame()).not.toContain(alwaysAllowText);
+        expect(lastFrame()).toMatchSnapshot();
       });
+    });
+  });
+
+  describe('enablePermanentToolApproval setting', () => {
+    const editConfirmationDetails: ToolCallConfirmationDetails = {
+      type: 'edit',
+      title: 'Confirm Edit',
+      fileName: 'test.txt',
+      filePath: '/test.txt',
+      fileDiff: '...diff...',
+      originalContent: 'a',
+      newContent: 'b',
+      onConfirm: vi.fn(),
+    };
+
+    it('should NOT show "Allow for all future sessions" when setting is false (default)', () => {
+      const mockConfig = {
+        isTrustedFolder: () => true,
+        getIdeMode: () => false,
+      } as unknown as Config;
+
+      const { lastFrame } = renderWithProviders(
+        <ToolConfirmationMessage
+          callId="test-call-id"
+          confirmationDetails={editConfirmationDetails}
+          config={mockConfig}
+          availableTerminalHeight={30}
+          terminalWidth={80}
+        />,
+        {
+          settings: createMockSettings({
+            security: { enablePermanentToolApproval: false },
+          }),
+        },
+      );
+
+      expect(lastFrame()).not.toContain('Allow for all future sessions');
+    });
+
+    it('should show "Allow for all future sessions" when setting is true', () => {
+      const mockConfig = {
+        isTrustedFolder: () => true,
+        getIdeMode: () => false,
+      } as unknown as Config;
+
+      const { lastFrame } = renderWithProviders(
+        <ToolConfirmationMessage
+          callId="test-call-id"
+          confirmationDetails={editConfirmationDetails}
+          config={mockConfig}
+          availableTerminalHeight={30}
+          terminalWidth={80}
+        />,
+        {
+          settings: createMockSettings({
+            security: { enablePermanentToolApproval: true },
+          }),
+        },
+      );
+
+      expect(lastFrame()).toContain('Allow for all future sessions');
+    });
+  });
+
+  describe('Modify with external editor option', () => {
+    const editConfirmationDetails: ToolCallConfirmationDetails = {
+      type: 'edit',
+      title: 'Confirm Edit',
+      fileName: 'test.txt',
+      filePath: '/test.txt',
+      fileDiff: '...diff...',
+      originalContent: 'a',
+      newContent: 'b',
+      onConfirm: vi.fn(),
+    };
+
+    it('should show "Modify with external editor" when NOT in IDE mode', () => {
+      const mockConfig = {
+        isTrustedFolder: () => true,
+        getIdeMode: () => false,
+      } as unknown as Config;
+
+      vi.mocked(useToolActions).mockReturnValue({
+        confirm: vi.fn(),
+        cancel: vi.fn(),
+        isDiffingEnabled: false,
+      });
+
+      const { lastFrame } = renderWithProviders(
+        <ToolConfirmationMessage
+          callId="test-call-id"
+          confirmationDetails={editConfirmationDetails}
+          config={mockConfig}
+          availableTerminalHeight={30}
+          terminalWidth={80}
+        />,
+      );
+
+      expect(lastFrame()).toContain('Modify with external editor');
+    });
+
+    it('should show "Modify with external editor" when in IDE mode but diffing is NOT enabled', () => {
+      const mockConfig = {
+        isTrustedFolder: () => true,
+        getIdeMode: () => true,
+      } as unknown as Config;
+
+      vi.mocked(useToolActions).mockReturnValue({
+        confirm: vi.fn(),
+        cancel: vi.fn(),
+        isDiffingEnabled: false,
+      });
+
+      const { lastFrame } = renderWithProviders(
+        <ToolConfirmationMessage
+          callId="test-call-id"
+          confirmationDetails={editConfirmationDetails}
+          config={mockConfig}
+          availableTerminalHeight={30}
+          terminalWidth={80}
+        />,
+      );
+
+      expect(lastFrame()).toContain('Modify with external editor');
+    });
+
+    it('should NOT show "Modify with external editor" when in IDE mode AND diffing is enabled', () => {
+      const mockConfig = {
+        isTrustedFolder: () => true,
+        getIdeMode: () => true,
+      } as unknown as Config;
+
+      vi.mocked(useToolActions).mockReturnValue({
+        confirm: vi.fn(),
+        cancel: vi.fn(),
+        isDiffingEnabled: true,
+      });
+
+      const { lastFrame } = renderWithProviders(
+        <ToolConfirmationMessage
+          callId="test-call-id"
+          confirmationDetails={editConfirmationDetails}
+          config={mockConfig}
+          availableTerminalHeight={30}
+          terminalWidth={80}
+        />,
+      );
+
+      expect(lastFrame()).not.toContain('Modify with external editor');
     });
   });
 });

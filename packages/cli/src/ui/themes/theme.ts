@@ -5,8 +5,18 @@
  */
 
 import type { CSSProperties } from 'react';
+
 import type { SemanticColors } from './semantic-tokens.js';
-import { resolveColor, interpolateColor } from './color-utils.js';
+
+import {
+  resolveColor,
+  interpolateColor,
+  getThemeTypeFromBackgroundColor,
+} from './color-utils.js';
+
+import type { CustomTheme } from '@google/gemini-cli-core';
+
+export type { CustomTheme };
 
 export type ThemeType = 'light' | 'dark' | 'ansi' | 'custom';
 
@@ -29,61 +39,10 @@ export interface ColorsTheme {
   GradientColors?: string[];
 }
 
-export interface CustomTheme {
-  type: 'custom';
-  name: string;
-
-  text?: {
-    primary?: string;
-    secondary?: string;
-    link?: string;
-    accent?: string;
-    response?: string;
-  };
-  background?: {
-    primary?: string;
-    diff?: {
-      added?: string;
-      removed?: string;
-    };
-  };
-  border?: {
-    default?: string;
-    focused?: string;
-  };
-  ui?: {
-    comment?: string;
-    symbol?: string;
-    gradient?: string[];
-  };
-  status?: {
-    error?: string;
-    success?: string;
-    warning?: string;
-  };
-
-  // Legacy properties (all optional)
-  Background?: string;
-  Foreground?: string;
-  LightBlue?: string;
-  AccentBlue?: string;
-  AccentPurple?: string;
-  AccentCyan?: string;
-  AccentGreen?: string;
-  AccentYellow?: string;
-  AccentRed?: string;
-  DiffAdded?: string;
-  DiffRemoved?: string;
-  Comment?: string;
-  Gray?: string;
-  DarkGray?: string;
-  GradientColors?: string[];
-}
-
 export const lightTheme: ColorsTheme = {
   type: 'light',
   Background: '#FAFAFA',
-  Foreground: '#383A42',
+  Foreground: '',
   LightBlue: '#89BDCD',
   AccentBlue: '#3B82F6',
   AccentPurple: '#8B5CF6',
@@ -102,7 +61,7 @@ export const lightTheme: ColorsTheme = {
 export const darkTheme: ColorsTheme = {
   type: 'dark',
   Background: '#1E1E2E',
-  Foreground: '#CDD6F4',
+  Foreground: '',
   LightBlue: '#ADD8E6',
   AccentBlue: '#89B4FA',
   AccentPurple: '#CBA6F7',
@@ -121,7 +80,7 @@ export const darkTheme: ColorsTheme = {
 export const ansiTheme: ColorsTheme = {
   type: 'ansi',
   Background: 'black',
-  Foreground: 'white',
+  Foreground: '',
   LightBlue: 'blue',
   AccentBlue: 'blue',
   AccentPurple: 'magenta',
@@ -498,4 +457,41 @@ export function validateCustomTheme(customTheme: Partial<CustomTheme>): {
 function isValidThemeName(name: string): boolean {
   // Theme name should be non-empty and not contain invalid characters
   return name.trim().length > 0 && name.trim().length <= 50;
+}
+
+/**
+ * Picks a default theme name based on terminal background color.
+ * It first tries to find a theme with an exact background color match.
+ * If no match is found, it falls back to a light or dark theme based on the
+ * luminance of the background color.
+ * @param terminalBackground The hex color string of the terminal background.
+ * @param availableThemes A list of available themes to search through.
+ * @param defaultDarkThemeName The name of the fallback dark theme.
+ * @param defaultLightThemeName The name of the fallback light theme.
+ * @returns The name of the chosen theme.
+ */
+export function pickDefaultThemeName(
+  terminalBackground: string | undefined,
+  availableThemes: readonly Theme[],
+  defaultDarkThemeName: string,
+  defaultLightThemeName: string,
+): string {
+  if (terminalBackground) {
+    const lowerTerminalBackground = terminalBackground.toLowerCase();
+    for (const theme of availableThemes) {
+      if (!theme.colors.Background) continue;
+      // resolveColor can return undefined
+      const themeBg = resolveColor(theme.colors.Background)?.toLowerCase();
+      if (themeBg === lowerTerminalBackground) {
+        return theme.name;
+      }
+    }
+  }
+
+  const themeType = getThemeTypeFromBackgroundColor(terminalBackground);
+  if (themeType === 'light') {
+    return defaultLightThemeName;
+  }
+
+  return defaultDarkThemeName;
 }

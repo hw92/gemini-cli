@@ -4,12 +4,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { render } from '../../test-utils/render.js';
+import { renderWithProviders } from '../../test-utils/render.js';
 import { describe, it, expect, vi } from 'vitest';
 import { StatsDisplay } from './StatsDisplay.js';
 import * as SessionContext from '../contexts/SessionContext.js';
 import type { SessionMetrics } from '../contexts/SessionContext.js';
-import { ToolCallDecision } from '@google/gemini-cli-core';
+import {
+  ToolCallDecision,
+  type RetrieveUserQuotaResponse,
+} from '@google/gemini-cli-core';
 
 // Mock the context to provide controlled data for testing
 vi.mock('../contexts/SessionContext.js', async (importOriginal) => {
@@ -36,7 +39,7 @@ const renderWithMockedStats = (metrics: SessionMetrics) => {
     startNewPrompt: vi.fn(),
   });
 
-  return render(<StatsDisplay duration="1s" />);
+  return renderWithProviders(<StatsDisplay duration="1s" />, { width: 100 });
 };
 
 // Helper to create metrics with default zero values
@@ -73,8 +76,6 @@ describe('<StatsDisplay />', () => {
 
     expect(output).toContain('Performance');
     expect(output).toContain('Interaction Summary');
-    expect(output).not.toContain('Efficiency & Optimizations');
-    expect(output).not.toContain('Model'); // The table header
     expect(output).toMatchSnapshot();
   });
 
@@ -84,6 +85,7 @@ describe('<StatsDisplay />', () => {
         'gemini-2.5-pro': {
           api: { totalRequests: 3, totalErrors: 0, totalLatencyMs: 15000 },
           tokens: {
+            input: 500,
             prompt: 1000,
             candidates: 2000,
             total: 43234,
@@ -95,6 +97,7 @@ describe('<StatsDisplay />', () => {
         'gemini-2.5-flash': {
           api: { totalRequests: 5, totalErrors: 1, totalLatencyMs: 4500 },
           tokens: {
+            input: 15000,
             prompt: 25000,
             candidates: 15000,
             total: 150000000,
@@ -111,8 +114,8 @@ describe('<StatsDisplay />', () => {
 
     expect(output).toContain('gemini-2.5-pro');
     expect(output).toContain('gemini-2.5-flash');
-    expect(output).toContain('1,000');
-    expect(output).toContain('25,000');
+    expect(output).toContain('15,000');
+    expect(output).toContain('10,000');
     expect(output).toMatchSnapshot();
   });
 
@@ -122,6 +125,7 @@ describe('<StatsDisplay />', () => {
         'gemini-2.5-pro': {
           api: { totalRequests: 1, totalErrors: 0, totalLatencyMs: 100 },
           tokens: {
+            input: 50,
             prompt: 100,
             candidates: 100,
             total: 250,
@@ -165,7 +169,6 @@ describe('<StatsDisplay />', () => {
     expect(output).toContain('Performance');
     expect(output).toContain('Interaction Summary');
     expect(output).toContain('User Agreement');
-    expect(output).toContain('Savings Highlight');
     expect(output).toContain('gemini-2.5-pro');
     expect(output).toMatchSnapshot();
   });
@@ -216,6 +219,7 @@ describe('<StatsDisplay />', () => {
           'gemini-2.5-pro': {
             api: { totalRequests: 1, totalErrors: 0, totalLatencyMs: 100 },
             tokens: {
+              input: 100,
               prompt: 100,
               candidates: 100,
               total: 200,
@@ -230,7 +234,6 @@ describe('<StatsDisplay />', () => {
       const { lastFrame } = renderWithMockedStats(metrics);
       const output = lastFrame();
 
-      expect(output).not.toContain('Efficiency & Optimizations');
       expect(output).toMatchSnapshot();
     });
   });
@@ -378,13 +381,184 @@ describe('<StatsDisplay />', () => {
         startNewPrompt: vi.fn(),
       });
 
-      const { lastFrame } = render(
+      const { lastFrame } = renderWithProviders(
         <StatsDisplay duration="1s" title="Agent powering down. Goodbye!" />,
+        { width: 100 },
       );
       const output = lastFrame();
       expect(output).toContain('Agent powering down. Goodbye!');
       expect(output).not.toContain('Session Stats');
       expect(output).toMatchSnapshot();
+    });
+  });
+
+  describe('Quota Display', () => {
+    it('renders quota information when quotas are provided', () => {
+      const now = new Date('2025-01-01T12:00:00Z');
+      vi.useFakeTimers();
+      vi.setSystemTime(now);
+
+      const metrics = createTestMetrics({
+        models: {
+          'gemini-2.5-pro': {
+            api: { totalRequests: 1, totalErrors: 0, totalLatencyMs: 100 },
+            tokens: {
+              input: 50,
+              prompt: 100,
+              candidates: 100,
+              total: 250,
+              cached: 50,
+              thoughts: 0,
+              tool: 0,
+            },
+          },
+        },
+      });
+
+      const resetTime = new Date(now.getTime() + 1000 * 60 * 90).toISOString(); // 1 hour 30 minutes from now
+
+      const quotas: RetrieveUserQuotaResponse = {
+        buckets: [
+          {
+            modelId: 'gemini-2.5-pro',
+            remainingFraction: 0.75,
+            resetTime,
+          },
+        ],
+      };
+
+      useSessionStatsMock.mockReturnValue({
+        stats: {
+          sessionId: 'test-session-id',
+          sessionStartTime: new Date(),
+          metrics,
+          lastPromptTokenCount: 0,
+          promptCount: 5,
+        },
+
+        getPromptCount: () => 5,
+        startNewPrompt: vi.fn(),
+      });
+
+      const { lastFrame } = renderWithProviders(
+        <StatsDisplay duration="1s" quotas={quotas} />,
+        { width: 100 },
+      );
+      const output = lastFrame();
+
+      expect(output).toContain('Usage left');
+      expect(output).toContain('75.0%');
+      expect(output).toContain('(Resets in 1h 30m)');
+      expect(output).toMatchSnapshot();
+
+      vi.useRealTimers();
+    });
+
+    it('renders quota information for unused models', () => {
+      const now = new Date('2025-01-01T12:00:00Z');
+      vi.useFakeTimers();
+      vi.setSystemTime(now);
+
+      // No models in metrics, but a quota for gemini-2.5-flash
+      const metrics = createTestMetrics();
+
+      const resetTime = new Date(now.getTime() + 1000 * 60 * 120).toISOString(); // 2 hours from now
+
+      const quotas: RetrieveUserQuotaResponse = {
+        buckets: [
+          {
+            modelId: 'gemini-2.5-flash',
+            remainingFraction: 0.5,
+            resetTime,
+          },
+        ],
+      };
+
+      useSessionStatsMock.mockReturnValue({
+        stats: {
+          sessionId: 'test-session-id',
+          sessionStartTime: new Date(),
+          metrics,
+          lastPromptTokenCount: 0,
+          promptCount: 5,
+        },
+        getPromptCount: () => 5,
+        startNewPrompt: vi.fn(),
+      });
+
+      const { lastFrame } = renderWithProviders(
+        <StatsDisplay duration="1s" quotas={quotas} />,
+        { width: 100 },
+      );
+      const output = lastFrame();
+
+      expect(output).toContain('gemini-2.5-flash');
+      expect(output).toContain('-'); // for requests
+      expect(output).toContain('50.0%');
+      expect(output).toContain('(Resets in 2h)');
+      expect(output).toMatchSnapshot();
+
+      vi.useRealTimers();
+    });
+  });
+
+  describe('User Identity Display', () => {
+    it('renders User row with Auth Method and Tier', () => {
+      const metrics = createTestMetrics();
+
+      useSessionStatsMock.mockReturnValue({
+        stats: {
+          sessionId: 'test-session-id',
+          sessionStartTime: new Date(),
+          metrics,
+          lastPromptTokenCount: 0,
+          promptCount: 5,
+        },
+        getPromptCount: () => 5,
+        startNewPrompt: vi.fn(),
+      });
+
+      const { lastFrame } = renderWithProviders(
+        <StatsDisplay
+          duration="1s"
+          selectedAuthType="oauth"
+          userEmail="test@example.com"
+          tier="Pro"
+        />,
+        { width: 100 },
+      );
+      const output = lastFrame();
+
+      expect(output).toContain('Auth Method:');
+      expect(output).toContain('Logged in with Google (test@example.com)');
+      expect(output).toContain('Tier:');
+      expect(output).toContain('Pro');
+    });
+
+    it('renders User row with API Key and no Tier', () => {
+      const metrics = createTestMetrics();
+
+      useSessionStatsMock.mockReturnValue({
+        stats: {
+          sessionId: 'test-session-id',
+          sessionStartTime: new Date(),
+          metrics,
+          lastPromptTokenCount: 0,
+          promptCount: 5,
+        },
+        getPromptCount: () => 5,
+        startNewPrompt: vi.fn(),
+      });
+
+      const { lastFrame } = renderWithProviders(
+        <StatsDisplay duration="1s" selectedAuthType="Google API Key" />,
+        { width: 100 },
+      );
+      const output = lastFrame();
+
+      expect(output).toContain('Auth Method:');
+      expect(output).toContain('Google API Key');
+      expect(output).not.toContain('Tier:');
     });
   });
 });

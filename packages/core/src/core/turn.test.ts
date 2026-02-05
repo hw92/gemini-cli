@@ -36,13 +36,6 @@ vi.mock('../utils/errorReporting', () => ({
   reportError: vi.fn(),
 }));
 
-// Use the actual implementation from partUtils now that it's provided.
-vi.mock('../utils/generateContentResponseUtilities', () => ({
-  getResponseText: (resp: GenerateContentResponse) =>
-    resp.candidates?.[0]?.content?.parts?.map((part) => part.text).join('') ||
-    undefined,
-}));
-
 describe('Turn', () => {
   let turn: Turn;
   // Define a type for the mocked Chat instance for clarity
@@ -97,7 +90,7 @@ describe('Turn', () => {
       const events = [];
       const reqParts: Part[] = [{ text: 'Hi' }];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         reqParts,
         new AbortController().signal,
       )) {
@@ -105,12 +98,11 @@ describe('Turn', () => {
       }
 
       expect(mockSendMessageStream).toHaveBeenCalledWith(
-        'test-model',
-        {
-          message: reqParts,
-          config: { abortSignal: expect.any(AbortSignal) },
-        },
+        { model: 'gemini' },
+        reqParts,
         'prompt-id-1',
+        expect.any(AbortSignal),
+        undefined,
       );
 
       expect(events).toEqual([
@@ -146,7 +138,7 @@ describe('Turn', () => {
       const events = [];
       const reqParts: Part[] = [{ text: 'Use tools' }];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         reqParts,
         new AbortController().signal,
       )) {
@@ -210,7 +202,7 @@ describe('Turn', () => {
       const events = [];
       const reqParts: Part[] = [{ text: 'Test abort' }];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         reqParts,
         abortController.signal,
       )) {
@@ -233,7 +225,7 @@ describe('Turn', () => {
 
       const events = [];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         reqParts,
         new AbortController().signal,
       )) {
@@ -256,7 +248,7 @@ describe('Turn', () => {
       mockMaybeIncludeSchemaDepthContext.mockResolvedValue(undefined);
       const events = [];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         reqParts,
         new AbortController().signal,
       )) {
@@ -297,7 +289,7 @@ describe('Turn', () => {
 
       const events = [];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         [{ text: 'Test undefined tool parts' }],
         new AbortController().signal,
       )) {
@@ -374,7 +366,7 @@ describe('Turn', () => {
 
       const events = [];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         [{ text: 'Test' }],
         new AbortController().signal,
       )) {
@@ -411,7 +403,7 @@ describe('Turn', () => {
       const events = [];
       const reqParts: Part[] = [{ text: 'Test no finish reason' }];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         reqParts,
         new AbortController().signal,
       )) {
@@ -456,7 +448,7 @@ describe('Turn', () => {
       const events = [];
       const reqParts: Part[] = [{ text: 'Test multiple responses' }];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         reqParts,
         new AbortController().signal,
       )) {
@@ -499,7 +491,7 @@ describe('Turn', () => {
 
       const events = [];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         [{ text: 'Test citations' }],
         new AbortController().signal,
       )) {
@@ -549,7 +541,7 @@ describe('Turn', () => {
 
       const events = [];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         [{ text: 'test' }],
         new AbortController().signal,
       )) {
@@ -596,7 +588,7 @@ describe('Turn', () => {
 
       const events = [];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         [{ text: 'test' }],
         new AbortController().signal,
       )) {
@@ -642,7 +634,7 @@ describe('Turn', () => {
 
       const events = [];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         [{ text: 'test' }],
         new AbortController().signal,
       )) {
@@ -680,7 +672,7 @@ describe('Turn', () => {
       const reqParts: Part[] = [{ text: 'Test malformed error handling' }];
 
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         reqParts,
         abortController.signal,
       )) {
@@ -706,7 +698,7 @@ describe('Turn', () => {
 
       const events = [];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         [],
         new AbortController().signal,
       )) {
@@ -754,7 +746,7 @@ describe('Turn', () => {
 
       const events = [];
       for await (const event of turn.run(
-        'test-model',
+        { model: 'gemini' },
         [{ text: 'Hi' }],
         new AbortController().signal,
       )) {
@@ -762,6 +754,108 @@ describe('Turn', () => {
       }
 
       expect(events).toEqual([expectedEvent]);
+    });
+
+    it('should process all parts when thought is first part in chunk', async () => {
+      const mockResponseStream = (async function* () {
+        yield {
+          type: StreamEventType.CHUNK,
+          value: {
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    { text: '**Planning** the solution', thought: 'planning' },
+                    { text: 'I will help you with that.' },
+                  ],
+                },
+                citationMetadata: {
+                  citations: [{ uri: 'https://example.com', title: 'Source' }],
+                },
+                finishReason: 'STOP',
+              },
+            ],
+            functionCalls: [
+              {
+                id: 'fc1',
+                name: 'ReadFile',
+                args: { path: 'file.txt' },
+              },
+            ],
+            responseId: 'trace-789',
+          } as unknown as GenerateContentResponse,
+        };
+      })();
+      mockSendMessageStream.mockResolvedValue(mockResponseStream);
+
+      const events = [];
+      for await (const event of turn.run(
+        { model: 'gemini' },
+        [{ text: 'Test mixed content' }],
+        new AbortController().signal,
+      )) {
+        events.push(event);
+      }
+
+      // Should yield:
+      // 1. Thought event (from first part)
+      // 2. Content event (from second part)
+      // 3. ToolCallRequest event (from functionCalls)
+      // 4. Citation event (from citationMetadata, emitted with finishReason)
+      // 5. Finished event (from finishReason)
+
+      expect(events.length).toBe(5);
+
+      const thoughtEvent = events.find(
+        (e) => e.type === GeminiEventType.Thought,
+      );
+      expect(thoughtEvent).toBeDefined();
+      expect(thoughtEvent).toMatchObject({
+        type: GeminiEventType.Thought,
+        value: { subject: 'Planning', description: 'the solution' },
+        traceId: 'trace-789',
+      });
+
+      const contentEvent = events.find(
+        (e) => e.type === GeminiEventType.Content,
+      );
+      expect(contentEvent).toBeDefined();
+      expect(contentEvent).toMatchObject({
+        type: GeminiEventType.Content,
+        value: 'I will help you with that.',
+        traceId: 'trace-789',
+      });
+
+      const toolCallEvent = events.find(
+        (e) => e.type === GeminiEventType.ToolCallRequest,
+      );
+      expect(toolCallEvent).toBeDefined();
+      expect(toolCallEvent).toMatchObject({
+        type: GeminiEventType.ToolCallRequest,
+        value: expect.objectContaining({
+          callId: 'fc1',
+          name: 'ReadFile',
+          args: { path: 'file.txt' },
+        }),
+      });
+
+      const citationEvent = events.find(
+        (e) => e.type === GeminiEventType.Citation,
+      );
+      expect(citationEvent).toBeDefined();
+      expect(citationEvent).toMatchObject({
+        type: GeminiEventType.Citation,
+        value: expect.stringContaining('https://example.com'),
+      });
+
+      const finishedEvent = events.find(
+        (e) => e.type === GeminiEventType.Finished,
+      );
+      expect(finishedEvent).toBeDefined();
+      expect(finishedEvent).toMatchObject({
+        type: GeminiEventType.Finished,
+        value: { reason: 'STOP' },
+      });
     });
   });
 
@@ -780,7 +874,7 @@ describe('Turn', () => {
       mockSendMessageStream.mockResolvedValue(mockResponseStream);
       const reqParts: Part[] = [{ text: 'Hi' }];
       for await (const _ of turn.run(
-        'test-model',
+        { model: 'gemini' },
         reqParts,
         new AbortController().signal,
       )) {

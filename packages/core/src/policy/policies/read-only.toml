@@ -31,7 +31,7 @@ decision = "allow"
 priority = 50
 
 [[rule]]
-toolName = "search_file_content"
+toolName = "grep_search"
 decision = "allow"
 priority = 50
 
@@ -42,11 +42,6 @@ priority = 50
 
 [[rule]]
 toolName = "read_file"
-decision = "allow"
-priority = 50
-
-[[rule]]
-toolName = "read_many_files"
 decision = "allow"
 priority = 50
 

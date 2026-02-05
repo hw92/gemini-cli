@@ -5,28 +5,31 @@
  */
 
 import { useEffect } from 'react';
-import type { Config } from '@google/gemini-cli-core';
+import { type Config } from '@google/gemini-cli-core';
 import { loadTrustedFolders } from '../../config/trustedFolders.js';
-import { expandHomeDir } from '../utils/directoryUtils.js';
-import { refreshServerHierarchicalMemory } from '@google/gemini-cli-core';
+import { expandHomeDir, batchAddDirectories } from '../utils/directoryUtils.js';
+import {
+  debugLogger,
+  refreshServerHierarchicalMemory,
+} from '@google/gemini-cli-core';
 import { MultiFolderTrustDialog } from '../components/MultiFolderTrustDialog.js';
 import type { UseHistoryManagerReturn } from './useHistoryManager.js';
 import { MessageType, type HistoryItem } from '../types.js';
 
 async function finishAddingDirectories(
   config: Config,
-  addItem: (itemData: Omit<HistoryItem, 'id'>, baseTimestamp: number) => number,
+  addItem: (
+    itemData: Omit<HistoryItem, 'id'>,
+    baseTimestamp?: number,
+  ) => number,
   added: string[],
   errors: string[],
 ) {
   if (!config) {
-    addItem(
-      {
-        type: MessageType.ERROR,
-        text: 'Configuration is not available.',
-      },
-      Date.now(),
-    );
+    addItem({
+      type: MessageType.ERROR,
+      text: 'Configuration is not available.',
+    });
     return;
   }
 
@@ -46,7 +49,7 @@ async function finishAddingDirectories(
   }
 
   if (errors.length > 0) {
-    addItem({ type: MessageType.ERROR, text: errors.join('\n') }, Date.now());
+    addItem({ type: MessageType.ERROR, text: errors.join('\n') });
   }
 }
 
@@ -69,8 +72,6 @@ export function useIncludeDirsTrust(
       return;
     }
 
-    console.log('Inside useIncludeDirsTrust');
-
     // If folder trust is disabled, isTrustedFolder will be undefined.
     // In that case, or if the user decided not to trust the main folder,
     // we can just add the directories without checking them.
@@ -78,17 +79,13 @@ export function useIncludeDirsTrust(
       const added: string[] = [];
       const errors: string[] = [];
       const workspaceContext = config.getWorkspaceContext();
-      for (const pathToAdd of pendingDirs) {
-        try {
-          workspaceContext.addDirectory(expandHomeDir(pathToAdd.trim()));
-          added.push(pathToAdd.trim());
-        } catch (e) {
-          const error = e as Error;
-          errors.push(`Error adding '${pathToAdd.trim()}': ${error.message}`);
-        }
-      }
+
+      const result = batchAddDirectories(workspaceContext, pendingDirs);
+      added.push(...result.added);
+      errors.push(...result.errors);
 
       if (added.length > 0 || errors.length > 0) {
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
         finishAddingDirectories(config, addItem, added, errors);
       }
       config.clearPendingIncludeDirectories();
@@ -123,18 +120,14 @@ export function useIncludeDirsTrust(
     }
 
     const workspaceContext = config.getWorkspaceContext();
-    for (const pathToAdd of trustedDirs) {
-      try {
-        workspaceContext.addDirectory(expandHomeDir(pathToAdd));
-        added.push(pathToAdd);
-      } catch (e) {
-        const error = e as Error;
-        errors.push(`Error adding '${pathToAdd}': ${error.message}`);
-      }
+    if (trustedDirs.length > 0) {
+      const result = batchAddDirectories(workspaceContext, trustedDirs);
+      added.push(...result.added);
+      errors.push(...result.errors);
     }
 
     if (undefinedTrustDirs.length > 0) {
-      console.log(
+      debugLogger.log(
         'Creating custom dialog with undecidedDirs:',
         undefinedTrustDirs,
       );
@@ -153,6 +146,7 @@ export function useIncludeDirsTrust(
         />,
       );
     } else if (added.length > 0 || errors.length > 0) {
+      // eslint-disable-next-line @typescript-eslint/no-floating-promises
       finishAddingDirectories(config, addItem, added, errors);
       config.clearPendingIncludeDirectories();
     }

@@ -13,7 +13,8 @@ import {
   afterEach,
   type Mock,
 } from 'vitest';
-import { type CommandModule, type Argv } from 'yargs';
+import { format } from 'node:util';
+import { type Argv } from 'yargs';
 import { handleEnable, enableCommand } from './enable.js';
 import { ExtensionManager } from '../../config/extension-manager.js';
 import {
@@ -24,17 +25,25 @@ import {
 import { FatalConfigError } from '@google/gemini-cli-core';
 
 // Mock dependencies
-vi.mock('../../config/extension-manager.js');
-vi.mock('../../config/settings.js');
+const emitConsoleLog = vi.hoisted(() => vi.fn());
+const debugLogger = vi.hoisted(() => ({
+  log: vi.fn((message, ...args) => {
+    emitConsoleLog('log', format(message, ...args));
+  }),
+  error: vi.fn((message, ...args) => {
+    emitConsoleLog('error', format(message, ...args));
+  }),
+}));
+
 vi.mock('@google/gemini-cli-core', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('@google/gemini-cli-core')>();
   return {
     ...actual,
-    debugLogger: {
-      log: vi.fn(),
-      error: vi.fn(),
+    coreEvents: {
+      emitConsoleLog,
     },
+    debugLogger,
     getErrorMessage: vi.fn((error: { message: string }) => error.message),
     FatalConfigError: class extends Error {
       constructor(message: string) {
@@ -44,22 +53,33 @@ vi.mock('@google/gemini-cli-core', async (importOriginal) => {
     },
   };
 });
+
+vi.mock('../../config/extension-manager.js');
+vi.mock('../../config/settings.js');
 vi.mock('../../config/extensions/consent.js');
 vi.mock('../../config/extensions/extensionSettings.js');
+vi.mock('../utils.js', () => ({
+  exitCli: vi.fn(),
+}));
+
+const mockEnablementInstance = vi.hoisted(() => ({
+  getDisplayState: vi.fn(),
+  enable: vi.fn(),
+  clearSessionDisable: vi.fn(),
+  autoEnableServers: vi.fn(),
+}));
+vi.mock('../../config/mcp/mcpServerEnablement.js', () => ({
+  McpServerEnablementManager: {
+    getInstance: () => mockEnablementInstance,
+  },
+}));
 
 describe('extensions enable command', () => {
   const mockLoadSettings = vi.mocked(loadSettings);
   const mockExtensionManager = vi.mocked(ExtensionManager);
-  interface MockDebugLogger {
-    log: Mock;
-    error: Mock;
-  }
-  let mockDebugLogger: MockDebugLogger;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    mockDebugLogger = (await import('@google/gemini-cli-core'))
-      .debugLogger as unknown as MockDebugLogger;
     mockLoadSettings.mockReturnValue({
       merged: {},
     } as unknown as LoadedSettings);
@@ -67,6 +87,12 @@ describe('extensions enable command', () => {
       .fn()
       .mockResolvedValue(undefined);
     mockExtensionManager.prototype.enableExtension = vi.fn();
+    mockExtensionManager.prototype.getExtensions = vi.fn().mockReturnValue([]);
+    mockEnablementInstance.getDisplayState.mockReset();
+    mockEnablementInstance.enable.mockReset();
+    mockEnablementInstance.clearSessionDisable.mockReset();
+    mockEnablementInstance.autoEnableServers.mockReset();
+    mockEnablementInstance.autoEnableServers.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -106,7 +132,7 @@ describe('extensions enable command', () => {
         expect(
           mockExtensionManager.prototype.enableExtension,
         ).toHaveBeenCalledWith(name, expectedScope);
-        expect(mockDebugLogger.log).toHaveBeenCalledWith(expectedLog);
+        expect(emitConsoleLog).toHaveBeenCalledWith('log', expectedLog);
         mockCwd.mockRestore();
       },
     );
@@ -126,10 +152,54 @@ describe('extensions enable command', () => {
 
       mockCwd.mockRestore();
     });
+
+    it('should auto-enable disabled MCP servers for the extension', async () => {
+      const mockCwd = vi.spyOn(process, 'cwd').mockReturnValue('/test/dir');
+      mockEnablementInstance.autoEnableServers.mockResolvedValue([
+        'test-server',
+      ]);
+      mockExtensionManager.prototype.getExtensions = vi
+        .fn()
+        .mockReturnValue([
+          { name: 'my-extension', mcpServers: { 'test-server': {} } },
+        ]);
+
+      await handleEnable({ name: 'my-extension' });
+
+      expect(mockEnablementInstance.autoEnableServers).toHaveBeenCalledWith([
+        'test-server',
+      ]);
+      expect(emitConsoleLog).toHaveBeenCalledWith(
+        'log',
+        expect.stringContaining("MCP server 'test-server' was disabled"),
+      );
+      mockCwd.mockRestore();
+    });
+
+    it('should not log when MCP servers are already enabled', async () => {
+      const mockCwd = vi.spyOn(process, 'cwd').mockReturnValue('/test/dir');
+      mockEnablementInstance.autoEnableServers.mockResolvedValue([]);
+      mockExtensionManager.prototype.getExtensions = vi
+        .fn()
+        .mockReturnValue([
+          { name: 'my-extension', mcpServers: { 'test-server': {} } },
+        ]);
+
+      await handleEnable({ name: 'my-extension' });
+
+      expect(mockEnablementInstance.autoEnableServers).toHaveBeenCalledWith([
+        'test-server',
+      ]);
+      expect(emitConsoleLog).not.toHaveBeenCalledWith(
+        'log',
+        expect.stringContaining("MCP server 'test-server' was disabled"),
+      );
+      mockCwd.mockRestore();
+    });
   });
 
   describe('enableCommand', () => {
-    const command = enableCommand as CommandModule;
+    const command = enableCommand;
 
     it('should have correct command and describe', () => {
       expect(command.command).toBe('enable [--scope] <name>');
@@ -197,7 +267,9 @@ describe('extensions enable command', () => {
         _: [],
         $0: '',
       };
-      await (command.handler as unknown as (args: TestArgv) => void)(argv);
+      await (command.handler as unknown as (args: TestArgv) => Promise<void>)(
+        argv,
+      );
 
       expect(
         mockExtensionManager.prototype.enableExtension,

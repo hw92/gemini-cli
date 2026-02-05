@@ -35,7 +35,7 @@ _PowerShell_
 Remove-Item -Path (Join-Path $env:LocalAppData "npm-cache\_npx") -Recurse -Force
 ```
 
-## Method 2: Using npm (Global Install)
+## Method 2: Using npm (global install)
 
 If you installed the CLI globally (e.g., `npm install -g @google/gemini-cli`),
 use the `npm uninstall` command with the `-g` flag to remove it.
@@ -45,3 +45,21 @@ npm uninstall -g @google/gemini-cli
 ```
 
 This command completely removes the package from your system.
+
+## Method 3: Homebrew
+
+If you installed the CLI globally using Homebrew (e.g.,
+`brew install gemini-cli`), use the `brew uninstall` command to remove it.
+
+```bash
+brew uninstall gemini-cli
+```
+
+## Method 4: MacPorts
+
+If you installed the CLI globally using MacPorts (e.g.,
+`sudo port install gemini-cli`), use the `port uninstall` command to remove it.
+
+```bash
+sudo port uninstall gemini-cli
+```

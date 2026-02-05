@@ -6,13 +6,13 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { homedir } from 'node:os';
 import {
   FatalConfigError,
   getErrorMessage,
   isWithinRoot,
   ideContextStore,
   GEMINI_DIR,
+  homedir,
 } from '@google/gemini-cli-core';
 import type { Settings } from './settings.js';
 import stripJsonComments from 'strip-json-comments';
@@ -36,6 +36,15 @@ export enum TrustLevel {
   DO_NOT_TRUST = 'DO_NOT_TRUST',
 }
 
+export function isTrustLevel(
+  value: string | number | boolean | object | null | undefined,
+): value is TrustLevel {
+  return (
+    typeof value === 'string' &&
+    Object.values(TrustLevel).includes(value as TrustLevel)
+  );
+}
+
 export interface TrustRule {
   path: string;
   trustLevel: TrustLevel;
@@ -54,6 +63,32 @@ export interface TrustedFoldersFile {
 export interface TrustResult {
   isTrusted: boolean | undefined;
   source: 'ide' | 'file' | undefined;
+}
+
+const realPathCache = new Map<string, string>();
+
+/**
+ * FOR TESTING PURPOSES ONLY.
+ * Clears the real path cache.
+ */
+export function clearRealPathCacheForTesting(): void {
+  realPathCache.clear();
+}
+
+function getRealPath(location: string): string {
+  let realPath = realPathCache.get(location);
+  if (realPath !== undefined) {
+    return realPath;
+  }
+
+  try {
+    realPath = fs.existsSync(location) ? fs.realpathSync(location) : location;
+  } catch {
+    realPath = location;
+  }
+
+  realPathCache.set(location, realPath);
+  return realPath;
 }
 
 export class LoadedTrustedFolders {
@@ -81,39 +116,36 @@ export class LoadedTrustedFolders {
     config?: Record<string, TrustLevel>,
   ): boolean | undefined {
     const configToUse = config ?? this.user.config;
-    const trustedPaths: string[] = [];
-    const untrustedPaths: string[] = [];
 
-    for (const rule of Object.entries(configToUse).map(
-      ([path, trustLevel]) => ({ path, trustLevel }),
-    )) {
-      switch (rule.trustLevel) {
-        case TrustLevel.TRUST_FOLDER:
-          trustedPaths.push(rule.path);
-          break;
-        case TrustLevel.TRUST_PARENT:
-          trustedPaths.push(path.dirname(rule.path));
-          break;
-        case TrustLevel.DO_NOT_TRUST:
-          untrustedPaths.push(rule.path);
-          break;
-        default:
-          // Do nothing for unknown trust levels.
-          break;
+    // Resolve location to its realpath for canonical comparison
+    const realLocation = getRealPath(location);
+
+    let longestMatchLen = -1;
+    let longestMatchTrust: TrustLevel | undefined = undefined;
+
+    for (const [rulePath, trustLevel] of Object.entries(configToUse)) {
+      const effectivePath =
+        trustLevel === TrustLevel.TRUST_PARENT
+          ? path.dirname(rulePath)
+          : rulePath;
+
+      // Resolve effectivePath to its realpath for canonical comparison
+      const realEffectivePath = getRealPath(effectivePath);
+
+      if (isWithinRoot(realLocation, realEffectivePath)) {
+        if (rulePath.length > longestMatchLen) {
+          longestMatchLen = rulePath.length;
+          longestMatchTrust = trustLevel;
+        }
       }
     }
 
-    for (const trustedPath of trustedPaths) {
-      if (isWithinRoot(location, trustedPath)) {
-        return true;
-      }
-    }
-
-    for (const untrustedPath of untrustedPaths) {
-      if (path.normalize(location) === path.normalize(untrustedPath)) {
-        return false;
-      }
-    }
+    if (longestMatchTrust === TrustLevel.DO_NOT_TRUST) return false;
+    if (
+      longestMatchTrust === TrustLevel.TRUST_FOLDER ||
+      longestMatchTrust === TrustLevel.TRUST_PARENT
+    )
+      return true;
 
     return undefined;
   }
@@ -143,6 +175,7 @@ let loadedTrustedFolders: LoadedTrustedFolders | undefined;
  */
 export function resetTrustedFoldersForTesting(): void {
   loadedTrustedFolders = undefined;
+  clearRealPathCacheForTesting();
 }
 
 export function loadTrustedFolders(): LoadedTrustedFolders {
@@ -151,15 +184,16 @@ export function loadTrustedFolders(): LoadedTrustedFolders {
   }
 
   const errors: TrustedFoldersError[] = [];
-  let userConfig: Record<string, TrustLevel> = {};
+  const userConfig: Record<string, TrustLevel> = {};
 
   const userPath = getTrustedFoldersPath();
-
-  // Load user trusted folders
   try {
     if (fs.existsSync(userPath)) {
       const content = fs.readFileSync(userPath, 'utf-8');
-      const parsed: unknown = JSON.parse(stripJsonComments(content));
+      const parsed = JSON.parse(stripJsonComments(content)) as Record<
+        string,
+        string
+      >;
 
       if (
         typeof parsed !== 'object' ||
@@ -171,10 +205,20 @@ export function loadTrustedFolders(): LoadedTrustedFolders {
           path: userPath,
         });
       } else {
-        userConfig = parsed as Record<string, TrustLevel>;
+        for (const [path, trustLevel] of Object.entries(parsed)) {
+          if (isTrustLevel(trustLevel)) {
+            userConfig[path] = trustLevel;
+          } else {
+            const possibleValues = Object.values(TrustLevel).join(', ');
+            errors.push({
+              message: `Invalid trust level "${trustLevel}" for path "${path}". Possible values are: ${possibleValues}.`,
+              path: userPath,
+            });
+          }
+        }
       }
     }
-  } catch (error: unknown) {
+  } catch (error) {
     errors.push({
       message: getErrorMessage(error),
       path: userPath,
@@ -206,11 +250,12 @@ export function saveTrustedFolders(
 
 /** Is folder trust feature enabled per the current applied settings */
 export function isFolderTrustEnabled(settings: Settings): boolean {
-  const folderTrustSetting = settings.security?.folderTrust?.enabled ?? false;
+  const folderTrustSetting = settings.security?.folderTrust?.enabled ?? true;
   return folderTrustSetting;
 }
 
 function getWorkspaceTrustFromLocalConfig(
+  workspaceDir: string,
   trustConfig?: Record<string, TrustLevel>,
 ): TrustResult {
   const folders = loadTrustedFolders();
@@ -225,7 +270,7 @@ function getWorkspaceTrustFromLocalConfig(
     );
   }
 
-  const isTrusted = folders.isPathTrusted(process.cwd(), configToUse);
+  const isTrusted = folders.isPathTrusted(workspaceDir, configToUse);
   return {
     isTrusted,
     source: isTrusted !== undefined ? 'file' : undefined,
@@ -234,6 +279,7 @@ function getWorkspaceTrustFromLocalConfig(
 
 export function isWorkspaceTrusted(
   settings: Settings,
+  workspaceDir: string = process.cwd(),
   trustConfig?: Record<string, TrustLevel>,
 ): TrustResult {
   if (!isFolderTrustEnabled(settings)) {
@@ -246,5 +292,5 @@ export function isWorkspaceTrusted(
   }
 
   // Fall back to the local user configuration
-  return getWorkspaceTrustFromLocalConfig(trustConfig);
+  return getWorkspaceTrustFromLocalConfig(workspaceDir, trustConfig);
 }

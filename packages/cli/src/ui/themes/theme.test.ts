@@ -5,11 +5,15 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import * as themeModule from './theme.js';
+import {
+  createCustomTheme,
+  validateCustomTheme,
+  pickDefaultThemeName,
+  darkTheme,
+  type Theme,
+} from './theme.js';
 import { themeManager } from './theme-manager.js';
-
-const { validateCustomTheme, createCustomTheme } = themeModule;
-type CustomTheme = themeModule.CustomTheme;
+import type { CustomTheme } from '@google/gemini-cli-core';
 
 describe('createCustomTheme', () => {
   const baseTheme: CustomTheme = {
@@ -152,7 +156,6 @@ describe('themeManager.loadCustomThemes', () => {
   };
 
   it('should use values from DEFAULT_THEME when DiffAdded and DiffRemoved are not provided', () => {
-    const { darkTheme } = themeModule;
     const legacyTheme: Partial<CustomTheme> = { ...baseTheme };
     delete legacyTheme.DiffAdded;
     delete legacyTheme.DiffRemoved;
@@ -166,5 +169,43 @@ describe('themeManager.loadCustomThemes', () => {
     expect(result.colors.DiffRemoved).toBe(darkTheme.DiffRemoved);
     expect(result.colors.AccentBlue).toBe(legacyTheme.AccentBlue);
     expect(result.name).toBe(legacyTheme.name);
+  });
+});
+
+describe('pickDefaultThemeName', () => {
+  const mockThemes = [
+    { name: 'Dark Theme', type: 'dark', colors: { Background: '#000000' } },
+    { name: 'Light Theme', type: 'light', colors: { Background: '#ffffff' } },
+    { name: 'Blue Theme', type: 'dark', colors: { Background: '#0000ff' } },
+  ] as unknown as Theme[];
+
+  it('should return exact match if found', () => {
+    expect(
+      pickDefaultThemeName('#0000ff', mockThemes, 'Dark Theme', 'Light Theme'),
+    ).toBe('Blue Theme');
+  });
+
+  it('should return exact match (case insensitive)', () => {
+    expect(
+      pickDefaultThemeName('#FFFFFF', mockThemes, 'Dark Theme', 'Light Theme'),
+    ).toBe('Light Theme');
+  });
+
+  it('should return default light theme for light background if no match', () => {
+    expect(
+      pickDefaultThemeName('#eeeeee', mockThemes, 'Dark Theme', 'Light Theme'),
+    ).toBe('Light Theme');
+  });
+
+  it('should return default dark theme for dark background if no match', () => {
+    expect(
+      pickDefaultThemeName('#111111', mockThemes, 'Dark Theme', 'Light Theme'),
+    ).toBe('Dark Theme');
+  });
+
+  it('should return default dark theme if background is undefined', () => {
+    expect(
+      pickDefaultThemeName(undefined, mockThemes, 'Dark Theme', 'Light Theme'),
+    ).toBe('Dark Theme');
   });
 });

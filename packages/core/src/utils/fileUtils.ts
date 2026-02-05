@@ -229,6 +229,55 @@ export function isWithinRoot(
 }
 
 /**
+ * Safely resolves a path to its real path if it exists, otherwise returns the absolute resolved path.
+ */
+export function getRealPath(filePath: string): string {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return path.resolve(filePath);
+  }
+}
+
+/**
+ * Checks if a file's content is empty or contains only whitespace.
+ * Efficiently checks file size first, and only samples the beginning of the file.
+ * Honors Unicode BOM encodings.
+ */
+export async function isEmpty(filePath: string): Promise<boolean> {
+  try {
+    const stats = await fsPromises.stat(filePath);
+    if (stats.size === 0) return true;
+
+    // Sample up to 1KB to check for non-whitespace content.
+    // If a file is larger than 1KB and contains only whitespace,
+    // it's an extreme edge case we can afford to read slightly more of if needed,
+    // but for most valid plans/files, this is sufficient.
+    const fd = await fsPromises.open(filePath, 'r');
+    try {
+      const { buffer } = await fd.read({
+        buffer: Buffer.alloc(Math.min(1024, stats.size)),
+        offset: 0,
+        length: Math.min(1024, stats.size),
+        position: 0,
+      });
+
+      const bom = detectBOM(buffer);
+      const content = bom
+        ? buffer.subarray(bom.bomLength).toString('utf8')
+        : buffer.toString('utf8');
+
+      return content.trim().length === 0;
+    } finally {
+      await fd.close();
+    }
+  } catch {
+    // If file is unreadable, we treat it as empty/invalid for validation purposes
+    return true;
+  }
+}
+
+/**
  * Heuristic: determine if a file is likely binary.
  * Now BOM-aware: if a Unicode BOM is detected, we treat it as text.
  * For non-BOM files, retain the existing null-byte and non-printable ratio checks.
@@ -306,11 +355,15 @@ export async function detectFileType(
     if (lookedUpMimeType.startsWith('image/')) {
       return 'image';
     }
-    if (lookedUpMimeType.startsWith('audio/')) {
-      return 'audio';
-    }
-    if (lookedUpMimeType.startsWith('video/')) {
-      return 'video';
+    // Verify audio/video with content check to avoid MIME misidentification (#16888)
+    if (
+      lookedUpMimeType.startsWith('audio/') ||
+      lookedUpMimeType.startsWith('video/')
+    ) {
+      if (!(await isBinaryFile(filePath))) {
+        return 'text';
+      }
+      return lookedUpMimeType.startsWith('audio/') ? 'audio' : 'video';
     }
     if (lookedUpMimeType === 'application/pdf') {
       return 'pdf';
@@ -514,4 +567,77 @@ export async function fileExists(filePath: string): Promise<boolean> {
   } catch (_: unknown) {
     return false;
   }
+}
+
+const MAX_TRUNCATED_LINE_WIDTH = 1000;
+const MAX_TRUNCATED_CHARS = 4000;
+
+/**
+ * Formats a truncated message for tool output, handling multi-line and single-line (elephant) cases.
+ */
+export function formatTruncatedToolOutput(
+  contentStr: string,
+  outputFile: string,
+  truncateLines: number = 30,
+): string {
+  const physicalLines = contentStr.split('\n');
+  const totalPhysicalLines = physicalLines.length;
+
+  if (totalPhysicalLines > 1) {
+    // Multi-line case: show last N lines, but protect against "elephant" lines.
+    const lastLines = physicalLines.slice(-truncateLines);
+    let someLinesTruncatedInWidth = false;
+    const processedLines = lastLines.map((line) => {
+      if (line.length > MAX_TRUNCATED_LINE_WIDTH) {
+        someLinesTruncatedInWidth = true;
+        return (
+          line.substring(0, MAX_TRUNCATED_LINE_WIDTH) +
+          '... [LINE WIDTH TRUNCATED]'
+        );
+      }
+      return line;
+    });
+
+    const widthWarning = someLinesTruncatedInWidth
+      ? ' (some long lines truncated)'
+      : '';
+    return `Output too large. Showing the last ${processedLines.length} of ${totalPhysicalLines} lines${widthWarning}. For full output see: ${outputFile}
+...
+${processedLines.join('\n')}`;
+  } else {
+    // Single massive line case: use character-based truncation description.
+    const snippet = contentStr.slice(-MAX_TRUNCATED_CHARS);
+    return `Output too large. Showing the last ${MAX_TRUNCATED_CHARS.toLocaleString()} characters of the output. For full output see: ${outputFile}
+...${snippet}`;
+  }
+}
+
+/**
+ * Saves tool output to a temporary file for later retrieval.
+ */
+export const TOOL_OUTPUT_DIR = 'tool_output';
+
+export async function saveTruncatedToolOutput(
+  content: string,
+  toolName: string,
+  id: string | number, // Accept string (callId) or number (truncationId)
+  projectTempDir: string,
+): Promise<{ outputFile: string; totalLines: number }> {
+  const safeToolName = toolName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  const safeId = id
+    .toString()
+    .replace(/[^a-z0-9]/gi, '_')
+    .toLowerCase();
+  const fileName = `${safeToolName}_${safeId}.txt`;
+  const toolOutputDir = path.join(projectTempDir, TOOL_OUTPUT_DIR);
+  const outputFile = path.join(toolOutputDir, fileName);
+
+  await fsPromises.mkdir(toolOutputDir, { recursive: true });
+  await fsPromises.writeFile(outputFile, content);
+
+  const lines = content.split('\n');
+  return {
+    outputFile,
+    totalLines: lines.length,
+  };
 }

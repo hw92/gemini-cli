@@ -66,15 +66,19 @@ export function PermissionsModifyTrustDialog({
     (key) => {
       if (key.name === 'escape') {
         onExit();
+        return true;
       }
       if (needsRestart && key.name === 'r') {
         const success = commitTrustLevelChange();
         if (success) {
+          // eslint-disable-next-line @typescript-eslint/no-floating-promises
           relaunchApp();
         } else {
           onExit();
         }
+        return true;
       }
+      return false;
     },
     { isActive: true },
   );

@@ -10,7 +10,10 @@ import { renderHook } from '../../test-utils/render.js';
 import { waitFor } from '../../test-utils/async.js';
 import { useAtCompletion } from './useAtCompletion.js';
 import type { Config, FileSearch } from '@google/gemini-cli-core';
-import { FileSearchFactory } from '@google/gemini-cli-core';
+import {
+  FileSearchFactory,
+  FileDiscoveryService,
+} from '@google/gemini-cli-core';
 import type { FileSystemStructure } from '@google/gemini-cli-test-utils';
 import { createTmpDir, cleanupTmpDir } from '@google/gemini-cli-test-utils';
 import type { Suggestion } from '../components/SuggestionsDisplay.js';
@@ -48,7 +51,10 @@ describe('useAtCompletion', () => {
         respectGeminiIgnore: true,
       })),
       getEnableRecursiveFileSearch: () => true,
-      getFileFilteringDisableFuzzySearch: () => false,
+      getFileFilteringEnableFuzzySearch: () => true,
+      getResourceRegistry: vi.fn().mockReturnValue({
+        getAllResources: () => [],
+      }),
     } as unknown as Config;
     vi.clearAllMocks();
   });
@@ -145,12 +151,14 @@ describe('useAtCompletion', () => {
       const fileSearch = FileSearchFactory.create({
         projectRoot: testRootDir,
         ignoreDirs: [],
-        useGitignore: false,
-        useGeminiignore: false,
+        fileDiscoveryService: new FileDiscoveryService(testRootDir, {
+          respectGitIgnore: false,
+          respectGeminiIgnore: false,
+        }),
         cache: false,
         cacheTtl: 0,
         enableRecursiveFileSearch: true,
-        disableFuzzySearch: false,
+        enableFuzzySearch: true,
       });
       await fileSearch.initialize();
 
@@ -170,6 +178,34 @@ describe('useAtCompletion', () => {
         expect(result.current.suggestions.map((s) => s.value)).toEqual([
           'cRaZycAsE.txt',
         ]);
+      });
+    });
+  });
+
+  describe('MCP resource suggestions', () => {
+    it('should include MCP resources in the suggestion list using fuzzy matching', async () => {
+      mockConfig.getResourceRegistry = vi.fn().mockReturnValue({
+        getAllResources: () => [
+          {
+            serverName: 'server-1',
+            uri: 'file:///tmp/server-1/logs.txt',
+            name: 'logs',
+            discoveredAt: Date.now(),
+          },
+        ],
+      });
+
+      const { result } = renderHook(() =>
+        useTestHarnessForAtCompletion(true, 'logs', mockConfig, '/tmp'),
+      );
+
+      await waitFor(() => {
+        expect(
+          result.current.suggestions.some(
+            (suggestion) =>
+              suggestion.value === 'server-1:file:///tmp/server-1/logs.txt',
+          ),
+        ).toBe(true);
       });
     });
   });
@@ -240,12 +276,14 @@ describe('useAtCompletion', () => {
       const realFileSearch = FileSearchFactory.create({
         projectRoot: testRootDir,
         ignoreDirs: [],
-        useGitignore: true,
-        useGeminiignore: true,
+        fileDiscoveryService: new FileDiscoveryService(testRootDir, {
+          respectGitIgnore: true,
+          respectGeminiIgnore: true,
+        }),
         cache: false,
         cacheTtl: 0,
         enableRecursiveFileSearch: true,
-        disableFuzzySearch: false,
+        enableFuzzySearch: true,
       });
       await realFileSearch.initialize();
 
@@ -527,7 +565,7 @@ describe('useAtCompletion', () => {
           respectGitIgnore: true,
           respectGeminiIgnore: true,
         })),
-        getFileFilteringDisableFuzzySearch: () => false,
+        getFileFilteringEnableFuzzySearch: () => true,
       } as unknown as Config;
 
       const { result } = renderHook(() =>

@@ -9,7 +9,6 @@ import { useState } from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../semantic-colors.js';
 import {
-  EDITOR_DISPLAY_NAMES,
   editorSettingsManager,
   type EditorDisplay,
 } from '../editors/editorSettingsManager.js';
@@ -19,9 +18,13 @@ import type {
   LoadedSettings,
 } from '../../config/settings.js';
 import { SettingScope } from '../../config/settings.js';
-import type { EditorType } from '@google/gemini-cli-core';
-import { isEditorAvailable } from '@google/gemini-cli-core';
+import {
+  type EditorType,
+  isEditorAvailable,
+  EDITOR_DISPLAY_NAMES,
+} from '@google/gemini-cli-core';
 import { useKeypress } from '../hooks/useKeypress.js';
+import { coreEvents } from '@google/gemini-cli-core';
 
 interface EditorDialogProps {
   onSelect: (
@@ -47,10 +50,13 @@ export function EditorSettingsDialog({
     (key) => {
       if (key.name === 'tab') {
         setFocusedSection((prev) => (prev === 'editor' ? 'scope' : 'editor'));
+        return true;
       }
       if (key.name === 'escape') {
         onExit();
+        return true;
       }
+      return false;
     },
     { isActive: true },
   );
@@ -66,7 +72,10 @@ export function EditorSettingsDialog({
       )
     : 0;
   if (editorIndex === -1) {
-    console.error(`Editor is not supported: ${currentPreference}`);
+    coreEvents.emitFeedback(
+      'error',
+      `Editor is not supported: ${currentPreference}`,
+    );
     editorIndex = 0;
   }
 
@@ -118,12 +127,12 @@ export function EditorSettingsDialog({
 
   let mergedEditorName = 'None';
   if (
-    settings.merged.general?.preferredEditor &&
-    isEditorAvailable(settings.merged.general?.preferredEditor)
+    settings.merged.general.preferredEditor &&
+    isEditorAvailable(settings.merged.general.preferredEditor)
   ) {
     mergedEditorName =
       EDITOR_DISPLAY_NAMES[
-        settings.merged.general?.preferredEditor as EditorType
+        settings.merged.general.preferredEditor as EditorType
       ];
   }
 

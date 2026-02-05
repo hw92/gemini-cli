@@ -9,12 +9,16 @@ import type {
   LoadableSettingScope,
   LoadedSettings,
 } from '../../config/settings.js';
-import { type HistoryItem, MessageType } from '../types.js';
+import { MessageType } from '../types.js';
 import type { EditorType } from '@google/gemini-cli-core';
 import {
   allowEditorTypeInSandbox,
-  checkHasEditorType,
+  hasValidEditorCommand,
+  getEditorDisplayName,
+  coreEvents,
+  CoreEvent,
 } from '@google/gemini-cli-core';
+import type { UseHistoryManagerReturn } from './useHistoryManager.js';
 
 import { SettingPaths } from '../../config/settingPaths.js';
 
@@ -31,7 +35,7 @@ interface UseEditorSettingsReturn {
 export const useEditorSettings = (
   loadedSettings: LoadedSettings,
   setEditorError: (error: string | null) => void,
-  addItem: (item: Omit<HistoryItem, 'id'>, timestamp: number) => void,
+  addItem: UseHistoryManagerReturn['addItem'],
 ): UseEditorSettingsReturn => {
   const [isEditorDialogOpen, setIsEditorDialogOpen] = useState(false);
 
@@ -43,7 +47,7 @@ export const useEditorSettings = (
     (editorType: EditorType | undefined, scope: LoadableSettingScope) => {
       if (
         editorType &&
-        (!checkHasEditorType(editorType) ||
+        (!hasValidEditorCommand(editorType) ||
           !allowEditorTypeInSandbox(editorType))
       ) {
         return;
@@ -58,12 +62,13 @@ export const useEditorSettings = (
         addItem(
           {
             type: MessageType.INFO,
-            text: `Editor preference ${editorType ? `set to "${editorType}"` : 'cleared'} in ${scope} settings.`,
+            text: `Editor preference ${editorType ? `set to "${getEditorDisplayName(editorType)}"` : 'cleared'} in ${scope} settings.`,
           },
           Date.now(),
         );
         setEditorError(null);
         setIsEditorDialogOpen(false);
+        coreEvents.emit(CoreEvent.EditorSelected, { editor: editorType });
       } catch (error) {
         setEditorError(`Failed to set editor preference: ${error}`);
       }
@@ -73,6 +78,7 @@ export const useEditorSettings = (
 
   const exitEditorDialog = useCallback(() => {
     setIsEditorDialogOpen(false);
+    coreEvents.emit(CoreEvent.EditorSelected, { editor: undefined });
   }, []);
 
   return {

@@ -28,6 +28,7 @@ describe('useMessageQueue', () => {
     isConfigInitialized: boolean;
     streamingState: StreamingState;
     submitQuery: (query: string) => void;
+    isMcpReady: boolean;
   }) => {
     let hookResult: ReturnType<typeof useMessageQueue>;
     function TestComponent(props: typeof initialProps) {
@@ -51,6 +52,7 @@ describe('useMessageQueue', () => {
       isConfigInitialized: true,
       streamingState: StreamingState.Idle,
       submitQuery: mockSubmitQuery,
+      isMcpReady: true,
     });
 
     expect(result.current.messageQueue).toEqual([]);
@@ -62,6 +64,7 @@ describe('useMessageQueue', () => {
       isConfigInitialized: true,
       streamingState: StreamingState.Responding,
       submitQuery: mockSubmitQuery,
+      isMcpReady: true,
     });
 
     act(() => {
@@ -80,6 +83,7 @@ describe('useMessageQueue', () => {
       isConfigInitialized: true,
       streamingState: StreamingState.Responding,
       submitQuery: mockSubmitQuery,
+      isMcpReady: true,
     });
 
     act(() => {
@@ -100,6 +104,7 @@ describe('useMessageQueue', () => {
       isConfigInitialized: true,
       streamingState: StreamingState.Responding,
       submitQuery: mockSubmitQuery,
+      isMcpReady: true,
     });
 
     act(() => {
@@ -120,6 +125,7 @@ describe('useMessageQueue', () => {
       isConfigInitialized: true,
       streamingState: StreamingState.Responding,
       submitQuery: mockSubmitQuery,
+      isMcpReady: true,
     });
 
     act(() => {
@@ -133,11 +139,12 @@ describe('useMessageQueue', () => {
     );
   });
 
-  it('should auto-submit queued messages when transitioning to Idle', async () => {
+  it('should auto-submit queued messages when transitioning to Idle and MCP is ready', async () => {
     const { result, rerender } = renderMessageQueueHook({
       isConfigInitialized: true,
       streamingState: StreamingState.Responding,
       submitQuery: mockSubmitQuery,
+      isMcpReady: true,
     });
 
     // Add some messages
@@ -157,11 +164,37 @@ describe('useMessageQueue', () => {
     });
   });
 
+  it('should wait for MCP readiness before auto-submitting', async () => {
+    const { result, rerender } = renderMessageQueueHook({
+      isConfigInitialized: true,
+      streamingState: StreamingState.Idle,
+      submitQuery: mockSubmitQuery,
+      isMcpReady: false,
+    });
+
+    // Add some messages while Idle but MCP not ready
+    act(() => {
+      result.current.addMessage('Delayed message');
+    });
+
+    expect(result.current.messageQueue).toEqual(['Delayed message']);
+    expect(mockSubmitQuery).not.toHaveBeenCalled();
+
+    // Transition MCP to ready
+    rerender({ isMcpReady: true });
+
+    await waitFor(() => {
+      expect(mockSubmitQuery).toHaveBeenCalledWith('Delayed message');
+      expect(result.current.messageQueue).toEqual([]);
+    });
+  });
+
   it('should not auto-submit when queue is empty', () => {
     const { rerender } = renderMessageQueueHook({
       isConfigInitialized: true,
       streamingState: StreamingState.Responding,
       submitQuery: mockSubmitQuery,
+      isMcpReady: true,
     });
 
     // Transition to Idle with empty queue
@@ -175,6 +208,7 @@ describe('useMessageQueue', () => {
       isConfigInitialized: true,
       streamingState: StreamingState.Responding,
       submitQuery: mockSubmitQuery,
+      isMcpReady: true,
     });
 
     // Add messages
@@ -194,6 +228,7 @@ describe('useMessageQueue', () => {
       isConfigInitialized: true,
       streamingState: StreamingState.Idle,
       submitQuery: mockSubmitQuery,
+      isMcpReady: true,
     });
 
     // Start responding
@@ -235,6 +270,7 @@ describe('useMessageQueue', () => {
         isConfigInitialized: true,
         streamingState: StreamingState.Responding,
         submitQuery: mockSubmitQuery,
+        isMcpReady: true,
       });
 
       // Add multiple messages
@@ -253,9 +289,7 @@ describe('useMessageQueue', () => {
       // Pop all messages
       let poppedMessages: string | undefined;
       act(() => {
-        result.current.popAllMessages((messages) => {
-          poppedMessages = messages;
-        });
+        poppedMessages = result.current.popAllMessages();
       });
 
       expect(poppedMessages).toBe('Message 1\n\nMessage 2\n\nMessage 3');
@@ -267,13 +301,12 @@ describe('useMessageQueue', () => {
         isConfigInitialized: true,
         streamingState: StreamingState.Responding,
         submitQuery: mockSubmitQuery,
+        isMcpReady: true,
       });
 
       let poppedMessages: string | undefined = 'not-undefined';
       act(() => {
-        result.current.popAllMessages((messages) => {
-          poppedMessages = messages;
-        });
+        poppedMessages = result.current.popAllMessages();
       });
 
       expect(poppedMessages).toBeUndefined();
@@ -285,6 +318,7 @@ describe('useMessageQueue', () => {
         isConfigInitialized: true,
         streamingState: StreamingState.Responding,
         submitQuery: mockSubmitQuery,
+        isMcpReady: false,
       });
 
       act(() => {
@@ -293,9 +327,7 @@ describe('useMessageQueue', () => {
 
       let poppedMessages: string | undefined;
       act(() => {
-        result.current.popAllMessages((messages) => {
-          poppedMessages = messages;
-        });
+        poppedMessages = result.current.popAllMessages();
       });
 
       expect(poppedMessages).toBe('Single message');
@@ -307,6 +339,7 @@ describe('useMessageQueue', () => {
         isConfigInitialized: true,
         streamingState: StreamingState.Responding,
         submitQuery: mockSubmitQuery,
+        isMcpReady: false,
       });
 
       act(() => {
@@ -315,7 +348,7 @@ describe('useMessageQueue', () => {
       });
 
       act(() => {
-        result.current.popAllMessages(() => {});
+        result.current.popAllMessages();
       });
 
       // Queue should be empty
@@ -325,9 +358,7 @@ describe('useMessageQueue', () => {
       // Popping again should return undefined
       let secondPop: string | undefined = 'not-undefined';
       act(() => {
-        result.current.popAllMessages((messages) => {
-          secondPop = messages;
-        });
+        secondPop = result.current.popAllMessages();
       });
 
       expect(secondPop).toBeUndefined();
@@ -338,6 +369,7 @@ describe('useMessageQueue', () => {
         isConfigInitialized: true,
         streamingState: StreamingState.Responding,
         submitQuery: mockSubmitQuery,
+        isMcpReady: false,
       });
 
       // Add messages
@@ -349,9 +381,7 @@ describe('useMessageQueue', () => {
       // Pop all messages
       let firstPop: string | undefined;
       act(() => {
-        result.current.popAllMessages((messages) => {
-          firstPop = messages;
-        });
+        firstPop = result.current.popAllMessages();
       });
 
       expect(firstPop).toBe('First\n\nSecond');
@@ -365,9 +395,7 @@ describe('useMessageQueue', () => {
       // Pop again
       let secondPop: string | undefined;
       act(() => {
-        result.current.popAllMessages((messages) => {
-          secondPop = messages;
-        });
+        secondPop = result.current.popAllMessages();
       });
 
       expect(secondPop).toBe('Third\n\nFourth');
